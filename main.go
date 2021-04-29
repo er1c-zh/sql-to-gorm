@@ -2,34 +2,76 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
+	"strings"
+
 	res "github.com/antlr/antlr4/doc/resources"
 	"github.com/antlr/antlr4/runtime/Go/antlr"
 	gen "github.com/er1c-zh/sql-to-gorm/antlr4_gen"
-	"strings"
+)
+
+var (
+	path string
 )
 
 func main() {
-	///*
-		input, err := antlr.NewFileStream("./antlr4_gen/examples/ddl_create.sql")
-		if err != nil {
-			fmt.Printf("NewFileStream fail: %s", err.Error())
-			return
-		}
-	//*/
+	flag.StringVar(&path, "file", "", "path to sql file")
+	flag.Parse()
+
+	input, err := antlr.NewFileStream(path)
+	if err != nil {
+		fmt.Printf("NewFileStream fail: %s", err.Error())
+		flag.Usage()
+		return
+	}
 	//input := antlr.NewInputStream(src)
 	lexer := gen.NewMySqlLexer(res.NewCaseChangingStream(input, true))
 	stream := antlr.NewCommonTokenStream(lexer, 0)
 	p := gen.NewMySqlParser(stream)
-	p.AddErrorListener(antlr.NewDiagnosticErrorListener(true))
+	// p.AddErrorListener(antlr.NewDiagnosticErrorListener(true))
 	p.BuildParseTrees = true
 	tree := p.Root()
 
-	l := &Listener{}
-	antlr.ParseTreeWalkerDefault.Walk(l, tree)
-	for _, t := range l.Table {
-		fmt.Printf("%s\n", t.ToGorm())
+	l := &Listener{
+		GoModelFile: GoModelFile{
+			Import: map[string]interface{}{},
+		},
 	}
+	antlr.ParseTreeWalkerDefault.Walk(l, tree)
+
+	fmt.Printf("%s", l.ToGorm())
+}
+
+// GoModelFile model file
+type GoModelFile struct {
+	TableList []*Table
+	Import    map[string]interface{}
+	Package   string
+}
+
+func (f GoModelFile) ToGorm() string {
+	buf := new(bytes.Buffer)
+	pkg := f.Package
+	if pkg == "" {
+		pkg = "models"
+	}
+	buf.WriteString(fmt.Sprintf("package %s\n", pkg))
+
+	if len(f.Import) > 0 {
+		buf.WriteString("import (\n")
+		for _import := range f.Import {
+			buf.WriteString(fmt.Sprintf("    \"%s\"\n", _import))
+		}
+		buf.WriteString(")\n")
+	}
+
+	for _, t := range f.TableList {
+		buf.WriteString(t.ToGorm())
+		buf.WriteString("\n")
+	}
+
+	return buf.String()
 }
 
 type Table struct {
@@ -70,10 +112,10 @@ func (c Col) ToGorm() string {
 
 type Listener struct {
 	*gen.BaseMySqlParserListener
-	Table        []*Table
 	CurrentTable *Table
 	CurrentCol   *Col
-	Import       []string
+
+	GoModelFile
 }
 
 func (l *Listener) EnterColumnCreateTable(ctx *gen.ColumnCreateTableContext) {
@@ -83,7 +125,7 @@ func (l *Listener) EnterColumnCreateTable(ctx *gen.ColumnCreateTableContext) {
 	l.CurrentTable = &Table{Name: ctx.TableName().GetText()}
 }
 func (l *Listener) ExitColumnCreateTable(ctx *gen.ColumnCreateTableContext) {
-	l.Table = append(l.Table, l.CurrentTable)
+	l.TableList = append(l.TableList, l.CurrentTable)
 	l.CurrentTable = nil
 }
 
@@ -213,7 +255,9 @@ func (l *Listener) ParseDataType(_t string, rule []Rule) {
 		if strings.Contains(src, contain) {
 			l.SetDataType(_type)
 			if len(repo) > 0 {
-				l.Import = append(l.Import, repo...)
+				for _, _import := range repo {
+					l.Import[_import] = struct{}{}
+				}
 			}
 			return true
 		}

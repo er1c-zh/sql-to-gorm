@@ -1,3 +1,9 @@
+all: build
+
+build: 
+	[ -f output ] || mkdir -p output
+	go build -o output/sql-to-gorm
+
 antlr4=java -Xmx500M -cp "/usr/local/lib/antlr-4.9-complete.jar:$CLASSPATH" org.antlr.v4.Tool
 
 gen: clean_gen
@@ -9,3 +15,6 @@ gen: clean_gen
 
 clean_gen:
 	rm -rf ./antlr4_gen/* 
+
+clean:
+	[ -f output] && rm -rf ./output
