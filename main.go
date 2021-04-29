@@ -85,7 +85,7 @@ type Table struct {
 func (t Table) ToGorm() string {
 	buf := new(bytes.Buffer)
 	buf.WriteByte('\n')
-	buf.WriteString(fmt.Sprintf("type %s struct {\n", t.Name))
+	buf.WriteString(fmt.Sprintf("type %s struct {\n", snakeToCamel(t.Name)))
 	cols := make([]string, 0, len(t.Cols))
 	for _, col := range t.Cols {
 		cols = append(cols, col.ToGorm())
@@ -115,7 +115,7 @@ func (c Col) ToGorm() string {
 	}
 
 	return fmt.Sprintf("    %s %s `gorm:\"%s\"` //%s",
-		c.Name, c.DataType, strings.Join(tagList, ";"), comment)
+		snakeToCamel(c.Name), c.DataType, strings.Join(tagList, ";"), comment)
 }
 
 type Listener struct {
@@ -322,4 +322,16 @@ func (l *Listener) ParseDataType(_t string, rule []Rule) {
 			break
 		}
 	}
+}
+
+func snakeToCamel(src string) string {
+	l := strings.Split(src, "_")
+	for i := 0; i < len(l); i++ {
+		if len(l[i]) == 0 {
+			continue
+		}
+		leading := strings.ToUpper(l[i][0:1])
+		l[i] = leading + l[i][1:]
+	}
+	return strings.Join(l, "")
 }
