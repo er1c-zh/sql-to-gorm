@@ -12,12 +12,18 @@ import (
 )
 
 var (
-	path string
+	path     string
+	_package string
 )
 
-func main() {
+func Init() {
 	flag.StringVar(&path, "file", "", "path to sql file")
+	flag.StringVar(&_package, "package", "models", "go file package")
 	flag.Parse()
+}
+
+func main() {
+	Init()
 
 	input, err := antlr.NewFileStream(path)
 	if err != nil {
@@ -25,22 +31,19 @@ func main() {
 		flag.Usage()
 		return
 	}
-	//input := antlr.NewInputStream(src)
+
 	lexer := gen.NewMySqlLexer(res.NewCaseChangingStream(input, true))
 	stream := antlr.NewCommonTokenStream(lexer, 0)
 	p := gen.NewMySqlParser(stream)
 	// p.AddErrorListener(antlr.NewDiagnosticErrorListener(true))
 	p.BuildParseTrees = true
-	tree := p.Root()
 
-	l := &Listener{
-		GoModelFile: GoModelFile{
-			Import: map[string]interface{}{},
-		},
-	}
-	antlr.ParseTreeWalkerDefault.Walk(l, tree)
+	option := DefaultOption()
+	option.Package = _package
+	ln := NewListener(option)
+	antlr.ParseTreeWalkerDefault.Walk(ln, p.Root())
 
-	fmt.Printf("%s", l.ToGorm())
+	fmt.Printf("%s", ln.ToGorm())
 }
 
 // GoModelFile model file
@@ -82,19 +85,13 @@ type Table struct {
 func (t Table) ToGorm() string {
 	buf := new(bytes.Buffer)
 	buf.WriteByte('\n')
-	buf.WriteString("type ")
-	buf.WriteString("T")
-	buf.WriteString(strings.Trim(t.Name, "`"))
-	buf.WriteString(" struct {")
-	buf.WriteByte('\n')
+	buf.WriteString(fmt.Sprintf("type %s struct {\n", t.Name))
 	cols := make([]string, 0, len(t.Cols))
 	for _, col := range t.Cols {
 		cols = append(cols, col.ToGorm())
 	}
 	buf.WriteString(strings.Join(cols, "\n"))
-	buf.WriteByte('\n')
-	buf.WriteString("}")
-	buf.WriteByte('\n')
+	buf.WriteString("\n}\n")
 	return buf.String()
 }
 
@@ -103,11 +100,22 @@ type Col struct {
 	DataType string
 	NotNull  bool
 	Default  string
+	Comment  string
 }
 
 func (c Col) ToGorm() string {
-	return fmt.Sprintf("    %s %s \"gorm:%s\"",
-		strings.Trim(c.Name, "`"), c.DataType, c.Name)
+	comment := c.Name
+	if c.Comment != "" {
+		comment = c.Comment
+	}
+	tagList := make([]string, 0, 1)
+	tagList = append(tagList, fmt.Sprintf("column:%s", c.Name))
+	if c.Default != "" {
+		tagList = append(tagList, fmt.Sprintf("default:%s", c.Default))
+	}
+
+	return fmt.Sprintf("    %s %s `gorm:\"%s\"` //%s",
+		c.Name, c.DataType, strings.Join(tagList, ";"), comment)
 }
 
 type Listener struct {
@@ -118,11 +126,37 @@ type Listener struct {
 	GoModelFile
 }
 
+type Option struct {
+	Package string
+}
+
+func DefaultOption() Option {
+	return Option{
+		Package: "models",
+	}
+}
+
+func NewListener(option Option) *Listener {
+	ln := &Listener{
+		GoModelFile: GoModelFile{
+			Import: map[string]interface{}{},
+		},
+	}
+	ln.Package = option.Package
+	return ln
+}
+
 func (l *Listener) EnterColumnCreateTable(ctx *gen.ColumnCreateTableContext) {
 	if l.CurrentTable != nil {
 		panic("last table not done")
 	}
-	l.CurrentTable = &Table{Name: ctx.TableName().GetText()}
+
+	tableNameList := strings.Split(
+		strings.Trim(ctx.TableName().GetText(), "`"), ".")
+
+	l.CurrentTable = &Table{
+		Name: tableNameList[len(tableNameList)-1],
+	}
 }
 func (l *Listener) ExitColumnCreateTable(ctx *gen.ColumnCreateTableContext) {
 	l.TableList = append(l.TableList, l.CurrentTable)
@@ -134,7 +168,7 @@ func (l *Listener) EnterColumnDeclaration(ctx *gen.ColumnDeclarationContext) {
 		panic("last col not done")
 	}
 	l.CurrentCol = &Col{
-		Name:    ctx.Uid().GetText(),
+		Name:    strings.Trim(ctx.Uid().GetText(), "`"),
 		NotNull: false,
 		Default: "",
 	}
@@ -232,6 +266,26 @@ func (l *Listener) EnterLongVarbinaryDataType(c *gen.LongVarbinaryDataTypeContex
 }
 
 /////////////////////////////////////////////
+// comment //////////////////////////////////
+/////////////////////////////////////////////
+func (l *Listener) EnterCommentColumnConstraint(c *gen.CommentColumnConstraintContext) {
+	if l.CurrentCol == nil {
+		return
+	}
+	l.CurrentCol.Comment = c.STRING_LITERAL().GetText()
+}
+
+/////////////////////////////////////////////
+// default //////////////////////////////////
+/////////////////////////////////////////////
+func (l *Listener) EnterDefaultColumnConstraint(c *gen.DefaultColumnConstraintContext) {
+	if l.CurrentCol == nil {
+		return
+	}
+	l.CurrentCol.Default = c.DefaultValue().GetText()
+}
+
+/////////////////////////////////////////////
 /////////////////////////////////////////////
 /////////////////////////////////////////////
 
@@ -269,7 +323,3 @@ func (l *Listener) ParseDataType(_t string, rule []Rule) {
 		}
 	}
 }
-
-const (
-	src = `create table dt_table;`
-)
